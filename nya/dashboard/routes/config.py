@@ -9,12 +9,12 @@ registered when the dashboard is started with ``enable_control=True``.
 import logging
 import re
 import time
-from typing import TYPE_CHECKING, Any, Callable, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from nacho import ValidationError
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,32 @@ class AddApiRequest(BaseModel):
     endpoint: str = Field(..., pattern=r"^https?://.+")
     keys: List[str] = Field(..., min_length=1)
     key: Optional[str] = Field(None, pattern=r"^[a-zA-Z0-9_-]+$")
+    headers: Optional[Dict[str, str]] = Field(None, max_length=20)
+    """Custom request headers for the provider.
+
+    Optional: when omitted (or empty) the route writes the default
+    ``Authorization: Bearer ${{...}}`` header.  Admin-authored config,
+    so values are not checked for ``${{`` templates.
+    """
+
+    @field_validator("headers")
+    @classmethod
+    def _validate_headers(cls, value: Optional[Dict[str, str]]):
+        if value is None:
+            return value
+        for name, val in value.items():
+            stripped = name.strip()
+            if not stripped:
+                raise ValueError("header name must not be blank")
+            if len(stripped) > 100:
+                raise ValueError("header name must be at most 100 characters")
+            if not val:
+                raise ValueError(f"header '{stripped}' value must not be empty")
+            if len(val) > 300:
+                raise ValueError(
+                    f"header '{stripped}' value must be at most 300 characters"
+                )
+        return value
 
 
 class AddClientRequest(BaseModel):
@@ -144,10 +170,27 @@ def register_config_routes(app: FastAPI, dashboard: "DashboardAPI") -> None:
                     content={"error": f"API '{key}' already exists"},
                 )
             key_variable = _key_variable(config)
+            if body.headers:
+                # Custom headers replace the default Authorization header.
+                # Keys are stripped; blank-after-strip keys are dropped
+                # (pydantic rejects them upfront, this is a safety net).
+                headers = {
+                    name.strip(): val
+                    for name, val in body.headers.items()
+                    if name.strip()
+                }
+                if not headers:
+                    return JSONResponse(
+                        status_code=422,
+                        content={"error": "headers must not be empty"},
+                    )
+            else:
+                # No headers (None or {}): keep the default Bearer header.
+                headers = {"Authorization": "Bearer ${{" + key_variable + "}}"}
             value = {
                 "name": body.name,
                 "endpoint": body.endpoint,
-                "headers": {"Authorization": "Bearer ${{" + key_variable + "}}"},
+                "headers": headers,
                 "variables": {key_variable: list(body.keys)},
             }
             error = _set_and_save(

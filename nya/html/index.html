@@ -299,12 +299,19 @@
           <p>Registers a new upstream API in the config.</p>
         </div>
         <div>
+          <label class="block-label" for="provider-preset">Provider</label>
+          <select id="provider-preset" class="field" name="preset">
+            <option value="">Custom</option>
+          </select>
+        </div>
+        <div>
           <label class="block-label" for="provider-name">Name</label>
           <input id="provider-name" class="field" type="text" name="name" required autofocus placeholder="OpenAI" autocomplete="off" />
         </div>
         <div>
           <label class="block-label" for="provider-endpoint">Endpoint</label>
           <input id="provider-endpoint" class="field" type="url" name="endpoint" required placeholder="https://api.example.com/v1" autocomplete="off" />
+          <p class="block-note" id="endpoint-hint" hidden></p>
         </div>
         <div>
           <label class="block-label" for="provider-keys">Upstream keys <span class="block-note">one key per line</span></label>
@@ -321,6 +328,25 @@
           </div>
         </div>
       </form>
+      <!-- Success state: shown in place of the form after a 200 from POST /config/apis -->
+      <div id="add-provider-success" class="dialog-form" hidden>
+        <div class="section-heading">
+          <div class="section-kicker">Upstreams</div>
+          <h2 class="section-title">Provider добавлен</h2>
+        </div>
+        <div>
+          <div class="block-label">Базовый URL</div>
+          <div class="block-note" id="success-endpoint"></div>
+        </div>
+        <div>
+          <div class="block-label">Для агента</div>
+          <div class="block-note" id="success-agent"></div>
+        </div>
+        <div class="dialog-actions">
+          <button class="ghost-btn" type="button" id="add-more-btn">Добавить ещё</button>
+          <button class="ghost-btn btn-save" type="button" id="success-done-btn">Готово</button>
+        </div>
+      </div>
     </dialog>
 
     <!-- Add client key -->

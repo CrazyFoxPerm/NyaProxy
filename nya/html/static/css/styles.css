@@ -902,6 +902,11 @@ dialog::backdrop {
   gap: var(--sp-2);
   margin-top: var(--sp-1);
 }
+/* Live request-path hint under the Endpoint field (Add provider). */
+#endpoint-hint {
+  margin: var(--sp-1) 0 0;
+  white-space: pre-line;
+}
 .btn-save {
   background: var(--accent);
   color: var(--on-accent);

@@ -1925,14 +1925,117 @@ function generateClientKey() {
   return "sk-" + hex;
 }
 
+/* --- provider presets (static — no network) ------------------------------ */
+
+/* Common upstream providers. `headers: null` means "default Bearer auth":
+   the front sends no headers field at all and the backend falls back to
+   Authorization: Bearer ${{keys}}. Preset ids double as section keys. */
+const PROVIDER_PRESETS = [
+  { id: "openai", name: "OpenAI", endpoint: "https://api.openai.com/v1", headers: null, sectionKey: "openai" },
+  { id: "anthropic", name: "Anthropic", endpoint: "https://api.anthropic.com/v1",
+    headers: { "x-api-key": "${{keys}}", "anthropic-version": "2023-06-01" }, sectionKey: "anthropic" },
+  { id: "gemini", name: "Google Gemini", endpoint: "https://generativelanguage.googleapis.com/v1beta",
+    headers: { "x-goog-api-key": "${{keys}}" }, sectionKey: "gemini" },
+  { id: "openrouter", name: "OpenRouter", endpoint: "https://openrouter.ai/api/v1", headers: null, sectionKey: "openrouter" },
+  { id: "groq", name: "Groq", endpoint: "https://api.groq.com/openai/v1", headers: null, sectionKey: "groq" },
+  { id: "deepseek", name: "DeepSeek", endpoint: "https://api.deepseek.com/v1", headers: null, sectionKey: "deepseek" },
+  { id: "mistral", name: "Mistral", endpoint: "https://api.mistral.ai/v1", headers: null, sectionKey: "mistral" },
+  { id: "xai", name: "xAI", endpoint: "https://api.x.ai/v1", headers: null, sectionKey: "xai" },
+];
+
+/* Client-side preview slug for the live hint: lowercase, non-alphanumerics
+   to "-", trimmed at both ends. The server derives the authoritative key
+   (it may fall back to a timestamped one) — this is only a preview. */
+function previewSlug(value) {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "-").replace(/^-+|-+$/g, "");
+}
+
+/* Live hint under the Endpoint field: where requests actually go. */
+function updateProviderHint() {
+  const hint = $("endpoint-hint");
+  if (!hint) return;
+  const endpoint = $("provider-endpoint").value.trim().replace(/\/+$/, "");
+  if (!endpoint) {
+    hint.hidden = true;
+    hint.textContent = "";
+    return;
+  }
+  const key = $("provider-section-key").value.trim();
+  const slug = key || previewSlug($("provider-name").value.trim());
+  const lines = [`Запросы пойдут: ${endpoint}/<путь>`];
+  lines.push(
+    slug
+      ? `Агент зовёт: /api/${slug}/<путь>`
+      : "Агент зовёт: укажите Name или Section key"
+  );
+  hint.textContent = lines.join("\n");
+  hint.hidden = false;
+}
+
 function wireConfigDialogs() {
   const providerDialog = $("add-provider-dialog");
   const providerBtn = $("add-provider-btn");
   const providerForm = $("add-provider-form");
   if (providerBtn && providerDialog) {
-    providerBtn.addEventListener("click", () => providerDialog.showModal());
+    providerBtn.addEventListener("click", () => {
+      providerDialog.showModal();
+      updateProviderHint();
+    });
   }
   if (providerForm && providerDialog) {
+    const presetSelect = $("provider-preset");
+    let lastAutoName = ""; // last name auto-filled from a preset
+
+    // Populate the preset dropdown (Custom stays the first/default option).
+    if (presetSelect) {
+      for (const p of PROVIDER_PRESETS) {
+        const opt = document.createElement("option");
+        opt.value = p.id;
+        opt.textContent = p.name;
+        presetSelect.appendChild(opt);
+      }
+      presetSelect.addEventListener("change", () => {
+        const preset = PROVIDER_PRESETS.find((p) => p.id === presetSelect.value);
+        if (!preset) return; // Custom: never clear what was typed
+        const nameInput = $("provider-name");
+        // Auto-fill Name only when it is empty or still holds our last
+        // auto-fill — never clobber a manually typed name.
+        if (!nameInput.value.trim() || nameInput.value === lastAutoName) {
+          nameInput.value = preset.name;
+          lastAutoName = preset.name;
+        }
+        $("provider-endpoint").value = preset.endpoint;
+        $("provider-section-key").value = preset.sectionKey;
+        updateProviderHint();
+      });
+    }
+
+    // Keep the live hint in sync while the user types.
+    for (const id of ["provider-name", "provider-endpoint", "provider-section-key"]) {
+      const input = $(id);
+      if (input) input.addEventListener("input", updateProviderHint);
+    }
+
+    // Back to the form state: empty fields, preset = Custom, hint hidden.
+    const resetProviderDialog = () => {
+      providerForm.reset();
+      lastAutoName = "";
+      providerForm.hidden = false;
+      $("add-provider-success").hidden = true;
+      updateProviderHint();
+    };
+    providerDialog.addEventListener("close", resetProviderDialog);
+
+    const addMoreBtn = $("add-more-btn");
+    if (addMoreBtn) {
+      addMoreBtn.addEventListener("click", () => {
+        resetProviderDialog();
+        $("provider-name").focus();
+      });
+    }
+    const doneBtn = $("success-done-btn");
+    if (doneBtn) doneBtn.addEventListener("click", () => providerDialog.close());
+
     providerForm.addEventListener("submit", async (e) => {
       e.preventDefault();
       const name = $("provider-name").value.trim();
@@ -1948,14 +2051,21 @@ function wireConfigDialogs() {
       }
       const body = { name, endpoint, keys };
       if (sectionKey) body.key = sectionKey;
+      const preset = PROVIDER_PRESETS.find((p) => p.id === presetSelect.value);
+      // Non-default preset auth headers (anthropic x-api-key, gemini
+      // x-goog-api-key). Default-Bearer presets send nothing.
+      if (preset && preset.headers) body.headers = preset.headers;
       const saveBtn = providerForm.querySelector('[type="submit"]');
       saveBtn.setAttribute("aria-busy", "true");
       saveBtn.disabled = true;
       try {
         const res = await postJSONBody("/config/apis", body);
         toast(`Provider ${res.key} added`);
-        providerForm.reset();
-        providerDialog.close();
+        // Keep the dialog open: show the base URL to point the agent at.
+        $("success-endpoint").textContent = endpoint;
+        $("success-agent").textContent = `/api/${res.key}/<путь>`;
+        providerForm.hidden = true;
+        $("add-provider-success").hidden = false;
         fetchAll(); // picks up the new provider once it sees traffic
       } catch (err) {
         console.error(err);

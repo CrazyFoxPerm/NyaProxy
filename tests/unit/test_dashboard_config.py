@@ -301,6 +301,91 @@ def test_add_api_save_failure_returns_500_and_rolls_back():
 
 
 # --------------------------------------------------------------------------
+# POST /api/config/apis — custom headers
+# --------------------------------------------------------------------------
+
+
+def test_add_api_without_headers_keeps_default_bearer():
+    config = FakeConfig()
+
+    resp = make_client(config).post("/api/config/apis", json=api_payload())
+
+    assert resp.status_code == 200
+    assert config.get("apis.my-api.headers") == {"Authorization": "Bearer ${{keys}}"}
+
+
+def test_add_api_with_empty_headers_dict_keeps_default_bearer():
+    config = FakeConfig()
+
+    resp = make_client(config).post("/api/config/apis", json=api_payload(headers={}))
+
+    assert resp.status_code == 200
+    assert config.get("apis.my-api.headers") == {"Authorization": "Bearer ${{keys}}"}
+
+
+def test_add_api_custom_headers_replace_default_authorization():
+    config = FakeConfig()
+    headers = {"x-api-key": "${{keys}}", "anthropic-version": "2023-06-01"}
+
+    resp = make_client(config).post(
+        "/api/config/apis",
+        json=api_payload(headers=headers),
+    )
+
+    assert resp.status_code == 200
+    entry = config.get("apis.my-api")
+    # Exactly the submitted headers, no default Authorization header.
+    assert entry["headers"] == headers
+    assert "Authorization" not in entry["headers"]
+    # Structure of the rest of the entry is unchanged.
+    assert entry["name"] == "My API"
+    assert entry["endpoint"] == "https://api.test/v1"
+    assert entry["variables"] == {"keys": ["k1", "k2"]}
+    assert config.save_calls == 1
+
+
+def test_add_api_header_keys_are_stripped_before_storing():
+    config = FakeConfig()
+
+    resp = make_client(config).post(
+        "/api/config/apis",
+        json=api_payload(headers={"  x-api-key  ": "  v  "}),
+    )
+
+    assert resp.status_code == 200
+    # Key is stripped; value is stored as submitted.
+    assert config.get("apis.my-api.headers") == {"x-api-key": "  v  "}
+
+
+def test_add_api_headers_blank_key_after_strip_returns_422():
+    config = FakeConfig()
+
+    resp = make_client(config).post(
+        "/api/config/apis",
+        json=api_payload(headers={"  ": "v"}),
+    )
+
+    assert resp.status_code == 422
+    # Rejected before anything is written.
+    assert "apis" not in config.data
+    assert config.save_calls == 0
+
+
+def test_add_api_more_than_20_headers_returns_422():
+    config = FakeConfig()
+    headers = {f"h{i}": "v" for i in range(21)}
+
+    resp = make_client(config).post(
+        "/api/config/apis",
+        json=api_payload(headers=headers),
+    )
+
+    assert resp.status_code == 422
+    assert "apis" not in config.data
+    assert config.save_calls == 0
+
+
+# --------------------------------------------------------------------------
 # POST /api/config/clients
 # --------------------------------------------------------------------------
 
