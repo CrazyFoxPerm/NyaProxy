@@ -299,15 +299,29 @@ class AuthMiddleware(BaseHTTPMiddleware):
         True for the dashboard and config UI, which require the master key.
 
         The mount prefix is stripped first so the check still holds when the
-        app is served under a reverse-proxy path prefix.
+        app is served under a reverse-proxy path prefix. A mounted admin
+        sub-app also carries its mount prefix in root_path, so that value is
+        checked as an additional candidate surface name.
         """
         path = request.url.path
         root_path = request.scope.get("root_path", "")
+
+        def _matches(candidate: str) -> bool:
+            return any(
+                candidate == prefix or candidate.startswith(f"{prefix}/")
+                for prefix in ("/dashboard", "/config")
+            )
+
         if root_path and path.startswith(root_path):
             path = path[len(root_path) :] or "/"
 
-        return any(
-            path == prefix or path.startswith(f"{prefix}/")
+        # The root/mount prefix may itself name the surface: a mounted
+        # admin sub-app (dashboard, config) carries its mount prefix in
+        # root_path, and a reverse proxy may prepend its own segment
+        # ("/proxy/dashboard"). root_path is server configuration, and each
+        # prefix starts with "/", so endswith() stays segment-safe.
+        return _matches(path) or any(
+            root_path == prefix or root_path.endswith(prefix)
             for prefix in ("/dashboard", "/config")
         )
 

@@ -353,6 +353,14 @@ def test_single_string_key_is_its_own_master():
         ("/api/svc/dashboard/widget", "", False),
         # a sibling path that merely shares the prefix string is not admin
         ("/dashboard-public", "", False),
+        # a mounted admin sub-app carries its mount prefix in root_path
+        ("/api/config/clients", "/dashboard", True),
+        ("/anything", "/dashboard", True),
+        # reverse proxy prepending its own segment: composite root_path
+        ("/api/x", "/proxy/dashboard", True),
+        # siblings / unrelated prefixes must not match via endswith
+        ("/api/x", "/dashboard-public", False),
+        ("/api/x", "/prefix", False),
     ],
 )
 def test_is_admin_surface_path_resolution(path, root_path, expected):
@@ -383,6 +391,56 @@ def test_proxy_path_containing_dashboard_segment_is_not_admin():
         "/api/svc/dashboard/widget", headers={"Authorization": "Bearer app-key"}
     )
     assert resp.status_code == 200
+
+
+def test_mounted_admin_sub_app_accepts_dashboard_key_end_to_end():
+    """Two AuthMiddlewares (outer + mounted sub), as wired in app.py.
+
+    Regression for the 403 on mounted admin sub-apps: the inner middleware
+    sees the full path but root_path="/dashboard", which used to strip the
+    admin prefix away and turn the dashboard key into a proxy-key check.
+    """
+
+    async def ok(request):
+        return PlainTextResponse("ok")
+
+    auth = make_manager(["master-key", "client-key"], dashboard_key=["dash-1"])
+
+    # Inner app: its own AuthMiddleware, routes relative to the mount (like
+    # dashboard_app) -> answers GET /dashboard/api/ping from the outside.
+    sub = Starlette(routes=[Route("/api/ping", ok)])
+    sub.add_middleware(AuthMiddleware, auth=auth)
+
+    # Outer app: its own AuthMiddleware + a proxy route and a plain probe.
+    outer = Starlette(
+        routes=[Route("/api/proxy/thing", ok), Route("/dashboard_probe", ok)]
+    )
+    outer.add_middleware(AuthMiddleware, auth=auth)
+    outer.mount("/dashboard", sub)
+    client = TestClient(outer)
+
+    # The bug itself: the dashboard key must pass BOTH middleware layers.
+    assert (
+        client.get(
+            "/dashboard/api/ping", headers={"Authorization": "dash-1"}
+        ).status_code
+        == 200
+    )
+    # A proxy key is stopped by the outer admin gate (login page, 401).
+    resp = client.get("/dashboard/api/ping", headers={"Authorization": "client-key"})
+    assert resp.status_code == 401
+    assert resp.headers["content-type"].startswith("text/html")
+    # The dashboard key must not reach proxy routes outside the mount.
+    resp = client.get("/api/proxy/thing", headers={"Authorization": "dash-1"})
+    assert resp.status_code == 403
+    assert "error" in resp.json()
+    # Proxy traffic is unaffected by the fix.
+    assert (
+        client.get(
+            "/api/proxy/thing", headers={"Authorization": "client-key"}
+        ).status_code
+        == 200
+    )
 
 
 def test_login_page_returns_500_when_template_missing(monkeypatch):
