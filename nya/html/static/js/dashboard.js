@@ -1941,6 +1941,7 @@ const PROVIDER_PRESETS = [
   { id: "deepseek", name: "DeepSeek", endpoint: "https://api.deepseek.com/v1", headers: null, sectionKey: "deepseek" },
   { id: "mistral", name: "Mistral", endpoint: "https://api.mistral.ai/v1", headers: null, sectionKey: "mistral" },
   { id: "xai", name: "xAI", endpoint: "https://api.x.ai/v1", headers: null, sectionKey: "xai" },
+  { id: "nvidia", name: "NVIDIA", endpoint: "https://integrate.api.nvidia.com/v1", headers: null, sectionKey: "nvidia" },
 ];
 
 /* Client-side preview slug for the live hint: lowercase, non-alphanumerics
