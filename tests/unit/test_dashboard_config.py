@@ -14,6 +14,7 @@ from nacho import ValidationError
 from starlette.testclient import TestClient
 
 from nya.dashboard.api import DashboardAPI
+from nya.dashboard.routes.config import _mask_key
 
 # --------------------------------------------------------------------------
 # Fakes
@@ -121,7 +122,10 @@ def test_config_routes_absent_when_control_disabled():
 def test_config_routes_present_when_control_enabled():
     assert config_paths(enable_control=True) == {
         "/api/config/apis",
+        "/api/config/apis/{key}",
+        "/api/config/apis/{key}/keys",
         "/api/config/clients",
+        "/api/config/clients/{index}",
     }
 
 
@@ -163,6 +167,10 @@ def test_list_apis_reports_key_count_for_default_key_variable():
             "name": "OpenAI",
             "endpoint": "https://api.openai.test",
             "key_count": 3,
+            "key_masks": ["**", "**", "**"],
+            "has_custom_headers": False,
+            "is_default_auth": False,
+            "aliases": [],
         }
     ]
 
@@ -192,6 +200,73 @@ def test_list_apis_counts_keys_via_custom_key_variable():
     # key_count must follow default_settings.key_variable ("tokens"):
     # "custom" counts its tokens (2), "legacy" sees no tokens (0).
     assert counts == {"custom": 2, "legacy": 0}
+
+
+def test_list_apis_masks_keys_and_never_returns_full_keys():
+    full_key = "sk-supersecret-token-1234567890"
+    config = FakeConfig(
+        {
+            "apis": {
+                "openai": {
+                    "name": "OpenAI",
+                    "endpoint": "https://api.openai.test",
+                    "headers": {"Authorization": "Bearer ${{keys}}"},
+                    "aliases": ["gpt4", "chat"],
+                    "variables": {"keys": [full_key, "short1"]},
+                }
+            }
+        }
+    )
+
+    resp = make_client(config).get("/api/config/apis")
+
+    assert resp.status_code == 200
+    item = resp.json()[0]
+    # Long key: first/last 4 chars only; short key (<=8): full mask.
+    assert item["key_masks"] == ["sk-s...7890", "******"]
+    assert item["key_count"] == 2
+    assert item["has_custom_headers"] is True
+    assert item["is_default_auth"] is True
+    assert item["aliases"] == ["gpt4", "chat"]
+    # The full key must never appear anywhere in the response body.
+    assert full_key not in resp.text
+
+
+def test_list_apis_flags_custom_headers_and_invalid_aliases():
+    config = FakeConfig(
+        {
+            "apis": {
+                "custom": {
+                    "name": "Custom",
+                    "endpoint": "https://custom.test",
+                    "headers": {"x-api-key": "${{keys}}"},
+                    "aliases": ["one", 2],
+                },
+                "bare": {
+                    "name": "Bare",
+                    "endpoint": "https://bare.test",
+                    "aliases": "not-a-list",
+                },
+            }
+        }
+    )
+
+    resp = make_client(config).get("/api/config/apis")
+
+    items = {item["key"]: item for item in resp.json()}
+    assert items["custom"]["has_custom_headers"] is True
+    assert items["custom"]["is_default_auth"] is False
+    # aliases must be a list of strings, otherwise [].
+    assert items["custom"]["aliases"] == []
+    assert items["bare"]["has_custom_headers"] is False
+    assert items["bare"]["is_default_auth"] is False
+    assert items["bare"]["aliases"] == []
+
+
+def test_mask_key_short_key_fully_starred_long_keeps_edges():
+    assert _mask_key("") == ""
+    assert _mask_key("12345678") == "********"
+    assert _mask_key("abcdefghi") == "abcd...fghi"
 
 
 # --------------------------------------------------------------------------
@@ -386,6 +461,140 @@ def test_add_api_more_than_20_headers_returns_422():
 
 
 # --------------------------------------------------------------------------
+# POST /api/config/apis/{key}/keys
+# --------------------------------------------------------------------------
+
+
+def test_add_provider_key_returns_503_without_config_manager():
+    resp = make_client().post("/api/config/apis/openai/keys", json={"key": "k"})
+
+    assert resp.status_code == 503
+
+
+def test_add_provider_key_appends_and_reports_new_count():
+    config = FakeConfig(
+        {"apis": {"openai": {"name": "OpenAI", "variables": {"keys": ["k1"]}}}}
+    )
+
+    resp = make_client(config).post("/api/config/apis/openai/keys", json={"key": "k2"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok", "key": "openai", "key_count": 2}
+    assert config.get("apis.openai.variables.keys") == ["k1", "k2"]
+    assert config.save_calls == 1
+
+
+def test_add_provider_key_initializes_missing_variables():
+    config = FakeConfig({"apis": {"openai": {"name": "OpenAI"}}})
+
+    resp = make_client(config).post("/api/config/apis/openai/keys", json={"key": "k1"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok", "key": "openai", "key_count": 1}
+    assert config.get("apis.openai.variables.keys") == ["k1"]
+    assert config.save_calls == 1
+
+
+def test_add_provider_key_unknown_provider_returns_404():
+    config = FakeConfig({"apis": {"openai": {"name": "OpenAI"}}})
+
+    resp = make_client(config).post("/api/config/apis/nope/keys", json={"key": "k"})
+
+    assert resp.status_code == 404
+    assert config.save_calls == 0
+
+
+def test_add_provider_key_duplicate_returns_409():
+    config = FakeConfig(
+        {"apis": {"openai": {"name": "OpenAI", "variables": {"keys": ["dup"]}}}}
+    )
+
+    resp = make_client(config).post("/api/config/apis/openai/keys", json={"key": "dup"})
+
+    assert resp.status_code == 409
+    assert config.get("apis.openai.variables.keys") == ["dup"]
+    assert config.save_calls == 0
+
+
+def test_add_provider_key_empty_and_blank_return_422():
+    config = FakeConfig({"apis": {"openai": {"name": "OpenAI"}}})
+    client = make_client(config)
+
+    empty = client.post("/api/config/apis/openai/keys", json={"key": ""})
+    blank = client.post("/api/config/apis/openai/keys", json={"key": "   "})
+
+    # "" is rejected by pydantic min_length, "   " by the route after strip.
+    assert empty.status_code == 422
+    assert blank.status_code == 422
+    assert config.save_calls == 0
+
+
+def test_add_provider_key_save_failure_rolls_back():
+    config = FakeConfig(
+        {"apis": {"openai": {"name": "OpenAI", "variables": {"keys": ["k1"]}}}}
+    )
+    config.save_error = RuntimeError("disk full")
+
+    resp = make_client(config).post("/api/config/apis/openai/keys", json={"key": "k2"})
+
+    assert resp.status_code == 500
+    # Rollback restored the pre-write list.
+    assert config.get("apis.openai.variables.keys") == ["k1"]
+    assert config.save_calls == 1
+
+
+# --------------------------------------------------------------------------
+# DELETE /api/config/apis/{key}
+# --------------------------------------------------------------------------
+
+
+def test_delete_api_returns_503_without_config_manager():
+    assert make_client().delete("/api/config/apis/openai").status_code == 503
+
+
+def test_delete_api_removes_section():
+    config = FakeConfig(
+        {
+            "apis": {
+                "openai": {"name": "OpenAI", "endpoint": "https://api.openai.test"},
+                "anthropic": {"name": "Anthropic", "endpoint": "https://a.test"},
+            }
+        }
+    )
+
+    resp = make_client(config).delete("/api/config/apis/openai")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+    assert "openai" not in config.get("apis")
+    assert "anthropic" in config.get("apis")
+    assert config.save_calls == 1
+
+
+def test_delete_api_unknown_provider_returns_404():
+    config = FakeConfig({"apis": {"openai": {"name": "OpenAI"}}})
+
+    resp = make_client(config).delete("/api/config/apis/nope")
+
+    assert resp.status_code == 404
+    assert "openai" in config.get("apis")
+    assert config.save_calls == 0
+
+
+def test_delete_api_save_failure_restores_section():
+    entry = {"name": "OpenAI", "endpoint": "https://api.openai.test"}
+    config = FakeConfig({"apis": {"openai": entry}})
+    config.save_error = RuntimeError("disk full")
+
+    resp = make_client(config).delete("/api/config/apis/openai")
+
+    assert resp.status_code == 500
+    # Rollback restored the removed section.
+    assert config.get("apis.openai") == entry
+    assert config.save_calls == 1
+
+
+# --------------------------------------------------------------------------
 # POST /api/config/clients
 # --------------------------------------------------------------------------
 
@@ -478,3 +687,113 @@ def test_add_client_key_save_failure_restores_previous_value():
 
     assert resp.status_code == 500
     assert config.get("server.api_key") == "old"
+
+
+# --------------------------------------------------------------------------
+# GET /api/config/clients
+# --------------------------------------------------------------------------
+
+
+def test_list_client_keys_returns_503_without_config_manager():
+    assert make_client().get("/api/config/clients").status_code == 503
+
+
+def test_list_client_keys_empty_returns_empty_list():
+    resp = make_client(FakeConfig()).get("/api/config/clients")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"clients": []}
+
+
+def test_list_client_keys_normalizes_single_string():
+    full_key = "verysecretclientkey-abcdef123456"
+    config = FakeConfig({"server": {"api_key": full_key}})
+
+    resp = make_client(config).get("/api/config/clients")
+
+    assert resp.status_code == 200
+    clients = resp.json()["clients"]
+    assert clients == [{"index": 0, "mask": _mask_key(full_key)}]
+    # Mask keeps only the edges — the full key never leaves the API.
+    assert full_key not in resp.text
+
+
+def test_list_client_keys_masks_short_values_and_indexes_lists():
+    config = FakeConfig({"server": {"api_key": ["a", "bb", "ccc"]}})
+
+    resp = make_client(config).get("/api/config/clients")
+
+    assert resp.json() == {
+        "clients": [
+            {"index": 0, "mask": "*"},
+            {"index": 1, "mask": "**"},
+            {"index": 2, "mask": "***"},
+        ]
+    }
+
+
+def test_list_client_keys_unexpected_type_returns_empty():
+    resp = make_client(FakeConfig({"server": {"api_key": 42}})).get(
+        "/api/config/clients"
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"clients": []}
+
+
+# --------------------------------------------------------------------------
+# DELETE /api/config/clients/{index}
+# --------------------------------------------------------------------------
+
+
+def test_delete_client_key_returns_503_without_config_manager():
+    assert make_client().delete("/api/config/clients/0").status_code == 503
+
+
+def test_delete_client_key_removes_by_index():
+    config = FakeConfig({"server": {"api_key": ["a", "b", "c"]}})
+
+    resp = make_client(config).delete("/api/config/clients/1")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+    assert config.get("server.api_key") == ["a", "c"]
+    assert config.save_calls == 1
+
+
+def test_delete_client_key_out_of_range_returns_404():
+    config = FakeConfig({"server": {"api_key": ["a", "b"]}})
+    client = make_client(config)
+
+    past = client.delete("/api/config/clients/5")
+    negative = client.delete("/api/config/clients/-1")
+
+    assert past.status_code == 404
+    # Negative indices must not wrap around the list.
+    assert negative.status_code == 404
+    assert config.get("server.api_key") == ["a", "b"]
+    assert config.save_calls == 0
+
+
+def test_delete_last_client_key_returns_409():
+    config = FakeConfig({"server": {"api_key": ["only"]}})
+
+    resp = make_client(config).delete("/api/config/clients/0")
+
+    assert resp.status_code == 409
+    assert resp.json() == {
+        "error": ("Cannot revoke the last client key: dashboard auth would be disabled")
+    }
+    assert config.get("server.api_key") == ["only"]
+    assert config.save_calls == 0
+
+
+def test_delete_client_key_save_failure_restores_previous_value():
+    config = FakeConfig({"server": {"api_key": ["a", "b"]}})
+    config.save_error = RuntimeError("disk full")
+
+    resp = make_client(config).delete("/api/config/clients/0")
+
+    assert resp.status_code == 500
+    assert config.get("server.api_key") == ["a", "b"]
+    assert config.save_calls == 1

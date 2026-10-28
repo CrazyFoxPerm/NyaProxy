@@ -529,6 +529,20 @@ async function postJSONBody(path, body) {
   return res.json();
 }
 
+/* DELETE — same {error} handling as postJSONBody. */
+async function deleteJSON(path) {
+  const res = await fetch(`${API}${path}`, { method: "DELETE" });
+  if (!res.ok) {
+    let msg = `${path} → ${res.status}`;
+    try {
+      const err = await res.json();
+      if (err && err.error) msg = err.error;
+    } catch {}
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
 /* --- live regions --------------------------------------------------------- */
 
 let toastTimer = null;
@@ -1973,6 +1987,268 @@ function updateProviderHint() {
   hint.hidden = false;
 }
 
+/* --- manage providers (masked list → provider card, two dialog states) --- */
+
+async function fetchProviderList() {
+  const res = await fetch(`${API}/config/apis`);
+  if (!res.ok) throw new Error(`providers → ${res.status}`);
+  return res.json();
+}
+
+function wireProviderManageDialog() {
+  const dialog = $("provider-manage-dialog");
+  const manageBtn = $("manage-providers-btn");
+  const listEl = $("pm-list");
+  const cardEl = $("pm-card");
+  const rowsEl = $("pm-list-rows");
+  if (!dialog || !manageBtn || !listEl || !cardEl || !rowsEl) return;
+
+  let providers = [];
+
+  let current = null; // provider shown in the card
+
+  const showList = () => {
+    cardEl.hidden = true;
+    listEl.hidden = false;
+    current = null;
+  };
+  const showCard = () => {
+    listEl.hidden = true;
+    cardEl.hidden = false;
+  };
+
+  const renderList = () => {
+    if (!providers.length) {
+      rowsEl.innerHTML = `<div class="empty-state">${COIN_GLYPH}No providers configured</div>`;
+      return;
+    }
+    rowsEl.innerHTML = providers
+      .map((p, i) => {
+        const count = (p.key_masks && p.key_masks.length) || p.key_count || 0;
+        return (
+          `<li class="manage-row" data-i="${i}">` +
+          `<span class="manage-name">${escapeHtml(p.name || p.key)}</span>` +
+          `<span class="manage-endpoint mono">${escapeHtml(p.endpoint || "")}</span>` +
+          `<span class="badge badge-neutral">${count} key${count === 1 ? "" : "s"}</span>` +
+          `</li>`
+        );
+      })
+      .join("");
+  };
+
+  const renderCard = (p) => {
+    current = p;
+    const endpoint = (p.endpoint || "").replace(/\/+$/, "");
+    const masks = p.key_masks || [];
+    $("pm-card-title").textContent = p.name || p.key;
+    $("pm-card-endpoint").textContent = p.endpoint || "";
+    $("pm-card-hint").textContent = `Базовый URL: ${endpoint}\nДля агента: /api/${p.key}/<путь>`;
+    $("pm-card-count").textContent = `${masks.length} key${masks.length === 1 ? "" : "s"}`;
+    const keyList = $("pm-key-list");
+    keyList.innerHTML = masks.length
+      ? masks
+          .map((m) => `<li class="manage-key mono">${escapeHtml(m)}</li>`)
+          .join("")
+      : `<li class="block-note">No keys yet — add one below.</li>`;
+    const addInput = $("pm-add-key");
+    if (addInput) addInput.value = "";
+    // Rebind Delete for this provider: buttons are static, the target changes.
+    const delBtn = $("pm-delete-btn");
+    const delCancel = $("pm-delete-cancel");
+    const onDel = async () => {
+      if (delBtn.getAttribute("aria-busy") === "true") return;
+      if (delBtn.dataset.armed !== "1") {
+        delBtn.dataset.armed = "1";
+        delBtn.textContent = "Delete provider?";
+        delBtn.classList.add("confirming");
+        delCancel.hidden = false;
+        return;
+      }
+      delete delBtn.dataset.armed;
+      delBtn.classList.remove("confirming");
+      delCancel.hidden = true;
+      delBtn.setAttribute("aria-busy", "true");
+      delBtn.textContent = "Deleting…";
+      try {
+        await deleteJSON(`/config/apis/${encodeURIComponent(p.key)}`);
+        toast(`Provider ${p.name || p.key} deleted`);
+        dialog.close();
+      } catch (err) {
+        console.error(err);
+        toast(err.message || "Failed to delete provider", "error");
+      } finally {
+        delBtn.removeAttribute("aria-busy");
+        delBtn.textContent = "Delete provider";
+      }
+    };
+    const onCancelDel = () => {
+      delete delBtn.dataset.armed;
+      delBtn.classList.remove("confirming");
+      delBtn.textContent = "Delete provider";
+      delCancel.hidden = true;
+      delBtn.focus();
+    };
+    // Fresh buttons for a fresh card — no stale closures or double listeners.
+    const freshDel = delBtn.cloneNode(true);
+    const freshCancel = delCancel.cloneNode(true);
+    freshDel.removeAttribute("data-armed");
+    freshCancel.hidden = true;
+    delBtn.replaceWith(freshDel);
+    delCancel.replaceWith(freshCancel);
+    freshDel.addEventListener("click", onDel);
+    freshCancel.addEventListener("click", onCancelDel);
+    showCard();
+  };
+
+  const loadList = async () => {
+    rowsEl.innerHTML = `<div class="empty-state">${COIN_GLYPH}Loading…</div>`;
+    try {
+      providers = await fetchProviderList();
+      renderList();
+    } catch (err) {
+      console.error(err);
+      rowsEl.innerHTML = `<div class="empty-state">${COIN_GLYPH}Couldn't load providers.</div>`;
+      toast(err.message || "Failed to load providers", "error");
+    }
+  };
+
+  manageBtn.addEventListener("click", () => {
+    showList();
+    dialog.showModal();
+    loadList();
+  });
+
+  // Single Close control shared by both states.
+  for (const btn of dialog.querySelectorAll("[data-close-dialog]")) {
+    btn.addEventListener("click", () => dialog.close());
+  }
+
+  rowsEl.addEventListener("click", (e) => {
+    const row = e.target.closest(".manage-row");
+    if (!row) return;
+    const p = providers[+row.dataset.i];
+    if (p) renderCard(p);
+  });
+
+  $("pm-back-btn").addEventListener("click", showList);
+
+  $("pm-add-key-btn").addEventListener("click", async () => {
+    const target = current;
+    if (!target) return;
+    const input = $("pm-add-key");
+    const key = input.value.trim();
+    if (!key) {
+      toast("Key is empty", "error");
+      return;
+    }
+    try {
+      await postJSONBody(`/config/apis/${encodeURIComponent(target.key)}/keys`, { key });
+      toast("Key added");
+      input.value = "";
+      const fresh = await fetchProviderList();
+      providers = fresh;
+      const updated = fresh.find((x) => x.key === target.key);
+      if (updated) renderCard(updated);
+      else showList();
+    } catch (err) {
+      console.error(err);
+      toast(err.message || "Failed to add key", "error");
+    }
+  });
+
+  $("pm-add-key").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      $("pm-add-key-btn").click();
+    }
+  });
+
+  dialog.addEventListener("close", showList);
+}
+
+/* --- client access (masked client keys, control-mode only) ----------------- */
+
+async function refreshClientKeys() {
+  const wrap = $("client-access");
+  const list = $("client-key-list");
+  if (!wrap || !list) return;
+  // Control routes (/api/config/*) exist only in control mode; without the
+  // guard every page load in a no-control deploy would fetch a 404.
+  if (document.body.dataset.control !== "flex") return;
+  try {
+    const res = await fetch(`${API}/config/clients`);
+    if (!res.ok) throw new Error(`clients → ${res.status}`);
+    const data = await res.json();
+    const clients = data.clients || [];
+    if (!clients.length) {
+      list.innerHTML = `<li class="block-note">No client keys yet.</li>`;
+    } else {
+      list.innerHTML = clients
+        .map(
+          (c) =>
+            `<li class="client-key-row">` +
+            `<span class="client-mask mono">${escapeHtml(c.mask)}</span>` +
+            `<span class="confirm-group">` +
+            `<button type="button" class="ghost-btn ghost-danger client-revoke" data-index="${c.index}">Revoke</button>` +
+            `<button type="button" class="ghost-btn ghost-cancel client-revoke-cancel" data-index="${c.index}" hidden>Cancel</button>` +
+            `</span></li>`
+        )
+        .join("");
+    }
+    wrap.hidden = false;
+  } catch (err) {
+    console.error(err);
+    // Non-200 (e.g. control routes absent): stay hidden, no toast noise.
+    wrap.hidden = true;
+  }
+}
+
+function wireClientKeyList() {
+  const list = $("client-key-list");
+  if (!list) return;
+  list.addEventListener("click", async (e) => {
+    const btn = e.target.closest(".client-revoke");
+    if (btn) {
+      const cancel = list.querySelector(
+        `.client-revoke-cancel[data-index="${btn.dataset.index}"]`
+      );
+      if (btn.dataset.armed !== "1") {
+        // First click arms the confirm (two-step destructive commit).
+        btn.dataset.armed = "1";
+        btn.textContent = "Revoke?";
+        btn.classList.add("confirming");
+        if (cancel) cancel.hidden = false;
+        return;
+      }
+      // Second click executes.
+      btn.disabled = true;
+      try {
+        await deleteJSON(`/config/clients/${btn.dataset.index}`);
+        toast("Client key revoked");
+        await refreshClientKeys();
+      } catch (err) {
+        console.error(err);
+        toast(err.message || "Failed to revoke key", "error");
+        btn.disabled = false;
+      }
+      return;
+    }
+    const cancel = e.target.closest(".client-revoke-cancel");
+    if (cancel) {
+      const revoke = list.querySelector(
+        `.client-revoke[data-index="${cancel.dataset.index}"]`
+      );
+      if (revoke) {
+        delete revoke.dataset.armed;
+        revoke.textContent = "Revoke";
+        revoke.classList.remove("confirming");
+      }
+      cancel.hidden = true;
+      if (revoke) revoke.focus();
+    }
+  });
+}
+
 function wireConfigDialogs() {
   const providerDialog = $("add-provider-dialog");
   const providerBtn = $("add-provider-btn");
@@ -2138,6 +2414,7 @@ function wireConfigDialogs() {
       try {
         await postJSONBody("/config/clients", { key });
         toast("Client key added");
+        refreshClientKeys(); // reflect the new key in the masked list
         if (keyInput) {
           keyInput.focus();
           keyInput.select(); // highlight for one last Copy
@@ -2154,7 +2431,9 @@ function wireConfigDialogs() {
   }
 
   // Cancel buttons: close the dialog they live in (plain type="button").
+  // #provider-manage-dialog wires its own Close buttons to keep a single listener.
   for (const btn of document.querySelectorAll("[data-close-dialog]")) {
+    if (btn.closest("#provider-manage-dialog")) continue;
     btn.addEventListener("click", () => {
       const dialog = btn.closest("dialog");
       if (dialog) dialog.close();
@@ -2213,6 +2492,9 @@ function init() {
   wireHistory();
   wireShortcuts();
   wireConfigDialogs();
+  wireProviderManageDialog();
+  wireClientKeyList();
+  refreshClientKeys();
 
   // Deep links: restore #api=<name> / #status=<class> / #key=<id> first.
   const h = readHash();

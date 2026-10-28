@@ -163,6 +163,10 @@
               <button id="add-client-key-btn" class="ghost-btn" type="button" style="display: {{ enable_control }}">Add client key</button>
             </div>
           </div>
+          <div id="client-access" hidden>
+            <div class="section-kicker">Client access</div>
+            <ul id="client-key-list"></ul>
+          </div>
           <div id="key-board" class="key-board">
             <span class="skel skel-line skel-strip"></span>
           </div>
@@ -184,6 +188,7 @@
               <kbd>/</kbd>
             </label>
             <button id="add-provider-btn" class="ghost-btn" type="button" style="display: {{ enable_control }}">Add provider</button>
+            <button id="manage-providers-btn" class="ghost-btn" type="button" style="display: {{ enable_control }}">Manage</button>
             <span class="confirm-group">
               <button id="reset-metrics-btn" class="ghost-btn ghost-danger" type="button" style="display: {{ enable_control }}">Reset metrics</button>
               <button id="reset-metrics-cancel" class="ghost-btn ghost-cancel" type="button" hidden aria-label="Cancel reset metrics">Cancel</button>
@@ -345,6 +350,52 @@
         <div class="dialog-actions">
           <button class="ghost-btn" type="button" id="add-more-btn">Добавить ещё</button>
           <button class="ghost-btn btn-save" type="button" id="success-done-btn">Готово</button>
+        </div>
+      </div>
+    </dialog>
+
+    <!-- Manage providers: list → provider card, two states in one dialog -->
+    <dialog id="provider-manage-dialog" aria-labelledby="pm-list-title">
+      <div id="pm-list" class="dialog-form">
+        <div class="section-heading">
+          <div class="section-kicker">Upstreams</div>
+          <h2 id="pm-list-title" class="section-title">Manage providers</h2>
+          <p>Configured upstream APIs — open one to inspect its keys.</p>
+        </div>
+        <ul id="pm-list-rows" class="manage-list"></ul>
+        <div class="dialog-actions">
+          <button class="ghost-btn ghost-cancel" type="button" data-close-dialog>Close</button>
+        </div>
+      </div>
+      <div id="pm-card" class="dialog-form" hidden>
+        <div class="section-heading">
+          <div class="section-kicker">Provider</div>
+          <h2 id="pm-card-title" class="section-title"></h2>
+          <p id="pm-card-endpoint" class="block-note mono"></p>
+        </div>
+        <div>
+          <p class="block-note" id="pm-card-hint"></p>
+        </div>
+        <div>
+          <div class="block-label">Upstream keys <span class="block-note" id="pm-card-count"></span></div>
+          <ul id="pm-key-list" class="manage-keys"></ul>
+        </div>
+        <div>
+          <label class="block-label" for="pm-add-key">Add key <span class="block-note">one key, stored masked in lists</span></label>
+          <div class="pm-add-row">
+            <input id="pm-add-key" class="field" type="text" autocomplete="off" spellcheck="false" placeholder="sk-…" />
+            <button id="pm-add-key-btn" class="ghost-btn btn-save" type="button">Add key</button>
+          </div>
+        </div>
+        <div class="dialog-actions">
+          <button id="pm-back-btn" class="ghost-btn" type="button">← Back</button>
+          <div class="section-controls">
+            <span class="confirm-group" id="pm-delete-group">
+              <button id="pm-delete-btn" class="ghost-btn ghost-danger" type="button" style="display: {{ enable_control }}">Delete provider</button>
+              <button id="pm-delete-cancel" class="ghost-btn ghost-cancel" type="button" hidden aria-label="Cancel delete provider">Cancel</button>
+            </span>
+            <button class="ghost-btn ghost-cancel" type="button" data-close-dialog>Close</button>
+          </div>
         </div>
       </div>
     </dialog>

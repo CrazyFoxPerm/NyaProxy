@@ -65,10 +65,39 @@ class AddClientRequest(BaseModel):
     key: str = Field(..., min_length=1)
 
 
+class AddProviderKeyRequest(BaseModel):
+    """Payload for topping up an upstream provider's key pool."""
+
+    key: str = Field(..., min_length=1)
+
+
 def _slugify(name: str) -> str:
     """Derive an ``apis`` section key from a display name."""
     slug = re.sub(r"[^a-z0-9]", "-", name.lower()).strip("-")
     return slug or f"api-{int(time.time() * 1000)}"
+
+
+def _mask_key(key: str) -> str:
+    """Mask a secret for display — the full value must never leave the API.
+
+    Keys of up to 8 characters are fully starred; longer keys keep only
+    the first and last 4 characters around an ellipsis.
+    """
+    if len(key) <= 8:
+        return "*" * len(key)
+    return key[:4] + "..." + key[-4:]
+
+
+def _normalize_client_keys(raw: Any) -> List[str]:
+    """Coerce ``server.api_key`` (None | str | list) to a list of keys."""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [raw]
+    if isinstance(raw, list):
+        return list(raw)
+    logger.warning(f"Unexpected server.api_key type: {type(raw).__name__}")
+    return []
 
 
 def _key_variable(config: "Nacho") -> str:
@@ -118,7 +147,7 @@ def register_config_routes(app: FastAPI, dashboard: "DashboardAPI") -> None:
 
     @app.get("/api/config/apis")
     async def list_apis():
-        """List configured providers with their upstream key counts."""
+        """List configured providers with masked keys (never full values)."""
         if not dashboard.config_manager:
             return JSONResponse(
                 status_code=503,
@@ -136,12 +165,23 @@ def register_config_routes(app: FastAPI, dashboard: "DashboardAPI") -> None:
                 keys = (
                     variables.get(key_variable) if isinstance(variables, dict) else None
                 )
+                key_list = keys if isinstance(keys, list) else []
+                headers = api.get("headers")
+                aliases = api.get("aliases")
                 result.append(
                     {
                         "key": key,
                         "name": api.get("name"),
                         "endpoint": api.get("endpoint"),
-                        "key_count": len(keys) if isinstance(keys, list) else 0,
+                        "key_count": len(key_list),
+                        "key_masks": [_mask_key(str(k)) for k in key_list],
+                        "has_custom_headers": bool(headers),
+                        "is_default_auth": headers
+                        == {"Authorization": "Bearer ${{" + key_variable + "}}"},
+                        "aliases": aliases
+                        if isinstance(aliases, list)
+                        and all(isinstance(a, str) for a in aliases)
+                        else [],
                     }
                 )
             return result
@@ -209,6 +249,92 @@ def register_config_routes(app: FastAPI, dashboard: "DashboardAPI") -> None:
                 content={"error": f"Error adding api: {str(e)}"},
             )
 
+    @app.post("/api/config/apis/{key}/keys")
+    async def add_provider_key(key: str, body: AddProviderKeyRequest):
+        """Append one upstream key to an existing provider's pool."""
+        if not dashboard.config_manager:
+            return JSONResponse(
+                status_code=503,
+                content={"error": "Config manager not available"},
+            )
+        try:
+            config = dashboard.config_manager.config
+            apis = config.get_dict("apis", {})
+            if key not in apis:
+                return JSONResponse(
+                    status_code=404,
+                    content={"error": f"API '{key}' not found"},
+                )
+            new_key = body.key.strip()
+            if not new_key:
+                return JSONResponse(
+                    status_code=422,
+                    content={"error": "Key must not be empty"},
+                )
+            key_variable = _key_variable(config)
+            api = apis[key]
+            variables = api.get("variables") if isinstance(api, dict) else None
+            if not isinstance(variables, dict):
+                variables = {}
+            stored = variables.get(key_variable)
+            old_list = list(stored) if isinstance(stored, list) else []
+            if new_key in old_list:
+                return JSONResponse(
+                    status_code=409,
+                    content={"error": "Key already exists in the pool"},
+                )
+            path = f"apis.{key}.variables.{key_variable}"
+            new_list = old_list + [new_key]
+            error = _set_and_save(
+                config,
+                path,
+                new_list,
+                rollback=lambda: config.set(path, old_list),
+            )
+            if error is not None:
+                return error
+            return {"status": "ok", "key": key, "key_count": len(new_list)}
+        except Exception as e:
+            logger.error(f"Error adding provider key: {str(e)}")
+            return JSONResponse(
+                status_code=500,
+                content={"error": f"Error adding provider key: {str(e)}"},
+            )
+
+    @app.delete("/api/config/apis/{key}")
+    async def delete_api(key: str):
+        """Remove a provider section from ``apis``."""
+        if not dashboard.config_manager:
+            return JSONResponse(
+                status_code=503,
+                content={"error": "Config manager not available"},
+            )
+        try:
+            config = dashboard.config_manager.config
+            apis = config.get_dict("apis", {})
+            if key not in apis:
+                return JSONResponse(
+                    status_code=404,
+                    content={"error": f"API '{key}' not found"},
+                )
+            old = apis[key]
+            new_apis = {k: v for k, v in apis.items() if k != key}
+            error = _set_and_save(
+                config,
+                "apis",
+                new_apis,
+                rollback=lambda: config.set(f"apis.{key}", old),
+            )
+            if error is not None:
+                return error
+            return {"status": "ok"}
+        except Exception as e:
+            logger.error(f"Error deleting api: {str(e)}")
+            return JSONResponse(
+                status_code=500,
+                content={"error": f"Error deleting api: {str(e)}"},
+            )
+
     @app.post("/api/config/clients")
     async def add_client_key(body: AddClientRequest):
         """Append a client key to ``server.api_key``."""
@@ -226,17 +352,7 @@ def register_config_routes(app: FastAPI, dashboard: "DashboardAPI") -> None:
                     content={"error": "Client key must not be empty"},
                 )
             raw_old = config.get("server.api_key")
-            if raw_old is None:
-                current: List[str] = []
-            elif isinstance(raw_old, str):
-                current = [raw_old]
-            elif isinstance(raw_old, list):
-                current = list(raw_old)
-            else:
-                logger.warning(
-                    f"Unexpected server.api_key type: {type(raw_old).__name__}"
-                )
-                current = []
+            current = _normalize_client_keys(raw_old)
             if key in current:
                 return JSONResponse(
                     status_code=409,
@@ -263,4 +379,78 @@ def register_config_routes(app: FastAPI, dashboard: "DashboardAPI") -> None:
             return JSONResponse(
                 status_code=500,
                 content={"error": f"Error adding client key: {str(e)}"},
+            )
+
+    @app.get("/api/config/clients")
+    async def list_client_keys():
+        """List client keys as masks — full values never leave the API."""
+        if not dashboard.config_manager:
+            return JSONResponse(
+                status_code=503,
+                content={"error": "Config manager not available"},
+            )
+        try:
+            config = dashboard.config_manager.config
+            current = _normalize_client_keys(config.get("server.api_key"))
+            return {
+                "clients": [
+                    {"index": i, "mask": _mask_key(str(k))}
+                    for i, k in enumerate(current)
+                ]
+            }
+        except Exception as e:
+            logger.error(f"Error listing client keys: {str(e)}")
+            return JSONResponse(
+                status_code=500,
+                content={"error": f"Error listing client keys: {str(e)}"},
+            )
+
+    @app.delete("/api/config/clients/{index}")
+    async def delete_client_key(index: int):
+        """Revoke one client key by index; the last key is protected."""
+        if not dashboard.config_manager:
+            return JSONResponse(
+                status_code=503,
+                content={"error": "Config manager not available"},
+            )
+        try:
+            config = dashboard.config_manager.config
+            raw_old = config.get("server.api_key")
+            current = _normalize_client_keys(raw_old)
+            if index < 0 or index >= len(current):
+                return JSONResponse(
+                    status_code=404,
+                    content={"error": f"Client key index {index} not found"},
+                )
+            if len(current) <= 1:
+                return JSONResponse(
+                    status_code=409,
+                    content={
+                        "error": (
+                            "Cannot revoke the last client key: "
+                            "dashboard auth would be disabled"
+                        )
+                    },
+                )
+
+            def _rollback() -> None:
+                if raw_old is None:
+                    config.delete("server.api_key")
+                else:
+                    config.set("server.api_key", raw_old)
+
+            error = _set_and_save(
+                config,
+                "server.api_key",
+                [k for i, k in enumerate(current) if i != index],
+                rollback=_rollback,
+            )
+            if error is not None:
+                return error
+            return {"status": "ok"}
+        except Exception as e:
+            logger.error(f"Error deleting client key: {str(e)}")
+            return JSONResponse(
+                status_code=500,
+                content={"error": f"Error deleting client key: {str(e)}"},
             )
