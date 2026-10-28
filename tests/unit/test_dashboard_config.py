@@ -578,12 +578,26 @@ def test_delete_api_unknown_provider_returns_404():
 
     assert resp.status_code == 404
     assert "openai" in config.get("apis")
+
+
+def test_delete_last_provider_returns_409_and_saves_nothing():
+    config = FakeConfig({"apis": {"openai": {"name": "OpenAI"}}})
+
+    resp = make_client(config).delete("/api/config/apis/openai")
+
+    assert resp.status_code == 409
+    assert "last provider" in resp.json()["error"]
+    assert "openai" in config.get("apis")
+    assert config.save_calls == 0
     assert config.save_calls == 0
 
 
 def test_delete_api_save_failure_restores_section():
     entry = {"name": "OpenAI", "endpoint": "https://api.openai.test"}
-    config = FakeConfig({"apis": {"openai": entry}})
+    other = {"name": "Anthropic", "endpoint": "https://a.test"}
+    # Two providers: deleting the last one is refused upfront (409), so a
+    # save-failure rollback is only reachable when a provider remains.
+    config = FakeConfig({"apis": {"openai": entry, "anthropic": other}})
     config.save_error = RuntimeError("disk full")
 
     resp = make_client(config).delete("/api/config/apis/openai")

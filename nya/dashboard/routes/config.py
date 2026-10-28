@@ -319,6 +319,17 @@ def register_config_routes(app: FastAPI, dashboard: "DashboardAPI") -> None:
                 )
             old = apis[key]
             new_apis = {k: v for k, v in apis.items() if k != key}
+            if not new_apis:
+                # The schema requires `apis` to be non-empty (minProperties 1),
+                # so an empty result would only produce an opaque 422 from
+                # validation — refuse upfront with a clear conflict instead.
+                return JSONResponse(
+                    status_code=409,
+                    content={
+                        "error": "Cannot delete the last provider: "
+                        "at least one API must stay configured"
+                    },
+                )
             error = _set_and_save(
                 config,
                 "apis",
