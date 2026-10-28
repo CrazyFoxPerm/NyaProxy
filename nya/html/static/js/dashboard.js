@@ -511,6 +511,24 @@ async function postJSON(path) {
   return res.json();
 }
 
+/* POST with a JSON body — config writes answer {error} on any non-200. */
+async function postJSONBody(path, body) {
+  const res = await fetch(`${API}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let msg = `${path} → ${res.status}`;
+    try {
+      const err = await res.json();
+      if (err && err.error) msg = err.error;
+    } catch {}
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
 /* --- live regions --------------------------------------------------------- */
 
 let toastTimer = null;
@@ -1897,6 +1915,142 @@ function wireShortcuts() {
   });
 }
 
+/* --- config dialogs (add provider / add client key) ----------------------------- */
+
+function generateClientKey() {
+  const bytes = new Uint8Array(20); // 40 hex chars
+  crypto.getRandomValues(bytes);
+  let hex = "";
+  for (const b of bytes) hex += b.toString(16).padStart(2, "0");
+  return "sk-" + hex;
+}
+
+function wireConfigDialogs() {
+  const providerDialog = $("add-provider-dialog");
+  const providerBtn = $("add-provider-btn");
+  const providerForm = $("add-provider-form");
+  if (providerBtn && providerDialog) {
+    providerBtn.addEventListener("click", () => providerDialog.showModal());
+  }
+  if (providerForm && providerDialog) {
+    providerForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const name = $("provider-name").value.trim();
+      const endpoint = $("provider-endpoint").value.trim();
+      const keys = $("provider-keys").value
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const sectionKey = $("provider-section-key").value.trim();
+      if (!name || !endpoint || keys.length === 0) {
+        toast("Name, endpoint and at least one key are required", "error");
+        return;
+      }
+      const body = { name, endpoint, keys };
+      if (sectionKey) body.key = sectionKey;
+      const saveBtn = providerForm.querySelector('[type="submit"]');
+      saveBtn.setAttribute("aria-busy", "true");
+      saveBtn.disabled = true;
+      try {
+        const res = await postJSONBody("/config/apis", body);
+        toast(`Provider ${res.key} added`);
+        providerForm.reset();
+        providerDialog.close();
+        fetchAll(); // picks up the new provider once it sees traffic
+      } catch (err) {
+        console.error(err);
+        toast(err.message || "Failed to add provider", "error");
+      } finally {
+        saveBtn.removeAttribute("aria-busy");
+        saveBtn.disabled = false;
+      }
+    });
+  }
+
+  const clientDialog = $("add-client-dialog");
+  const clientBtn = $("add-client-key-btn");
+  const clientForm = $("add-client-form");
+  const keyInput = $("client-key");
+  if (clientBtn && clientDialog) {
+    clientBtn.addEventListener("click", () => clientDialog.showModal());
+  }
+
+  const genBtn = $("generate-key-btn");
+  if (genBtn && keyInput) {
+    genBtn.addEventListener("click", () => {
+      keyInput.value = generateClientKey();
+      keyInput.focus();
+      keyInput.select();
+    });
+  }
+
+  const copyBtn = $("copy-key-btn");
+  if (copyBtn && keyInput) {
+    copyBtn.addEventListener("click", async () => {
+      const value = keyInput.value.trim();
+      if (!value) {
+        toast("Key is empty", "error");
+        return;
+      }
+      let copied = false;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        try {
+          await navigator.clipboard.writeText(value);
+          copied = true;
+        } catch (err) {
+          console.error(err);
+        }
+      }
+      if (!copied) {
+        keyInput.select();
+        try {
+          copied = document.execCommand("copy");
+        } catch (err) {
+          copied = false;
+        }
+      }
+      toast(copied ? "Key copied" : "Copy failed", copied ? "ok" : "error");
+    });
+  }
+
+  if (clientForm && clientDialog) {
+    clientForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const key = keyInput ? keyInput.value.trim() : "";
+      if (!key) {
+        toast("Key is empty", "error");
+        return;
+      }
+      const saveBtn = clientForm.querySelector('[type="submit"]');
+      saveBtn.setAttribute("aria-busy", "true");
+      saveBtn.disabled = true;
+      try {
+        await postJSONBody("/config/clients", { key });
+        toast("Client key added");
+        if (keyInput) {
+          keyInput.focus();
+          keyInput.select(); // highlight for one last Copy
+        }
+        clientDialog.close(); // keep the value visible if the dialog reopens
+      } catch (err) {
+        console.error(err);
+        toast(err.message || "Failed to add client key", "error");
+      } finally {
+        saveBtn.removeAttribute("aria-busy");
+        saveBtn.disabled = false;
+      }
+    });
+  }
+
+  // Cancel buttons: close the dialog they live in (plain type="button").
+  for (const btn of document.querySelectorAll("[data-close-dialog]")) {
+    btn.addEventListener("click", () => {
+      const dialog = btn.closest("dialog");
+      if (dialog) dialog.close();
+    });
+  }
+}
+
 /* --- init -------------------------------------------------------------------------- */
 
 function init() {
@@ -1947,6 +2101,7 @@ function init() {
   wireQueueStrip();
   wireHistory();
   wireShortcuts();
+  wireConfigDialogs();
 
   // Deep links: restore #api=<name> / #status=<class> / #key=<id> first.
   const h = readHash();

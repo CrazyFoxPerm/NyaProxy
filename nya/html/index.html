@@ -159,6 +159,9 @@
               <p>How evenly traffic spreads across the pool, and which keys are failing.</p>
             </div>
             <span id="ms-keys" class="micro-status" hidden><span class="dot dot-warn" aria-hidden="true"></span></span>
+            <div class="section-controls">
+              <button id="add-client-key-btn" class="ghost-btn" type="button" style="display: {{ enable_control }}">Add client key</button>
+            </div>
           </div>
           <div id="key-board" class="key-board">
             <span class="skel skel-line skel-strip"></span>
@@ -180,6 +183,7 @@
               <input id="api-search" class="field" type="search" placeholder="Filter APIs…" aria-label="Filter APIs" title="Filter (/)" />
               <kbd>/</kbd>
             </label>
+            <button id="add-provider-btn" class="ghost-btn" type="button" style="display: {{ enable_control }}">Add provider</button>
             <span class="confirm-group">
               <button id="reset-metrics-btn" class="ghost-btn ghost-danger" type="button" style="display: {{ enable_control }}">Reset metrics</button>
               <button id="reset-metrics-cancel" class="ghost-btn ghost-cancel" type="button" hidden aria-label="Cancel reset metrics">Cancel</button>
@@ -285,6 +289,62 @@
 
     <!-- Shared debounced live region for filter counts -->
     <div id="announcer" class="vh" aria-live="polite"></div>
+
+    <!-- Add upstream provider -->
+    <dialog id="add-provider-dialog" aria-labelledby="add-provider-title">
+      <form id="add-provider-form" class="dialog-form">
+        <div class="section-heading">
+          <div class="section-kicker">Upstreams</div>
+          <h2 id="add-provider-title" class="section-title">Add provider</h2>
+          <p>Registers a new upstream API in the config.</p>
+        </div>
+        <div>
+          <label class="block-label" for="provider-name">Name</label>
+          <input id="provider-name" class="field" type="text" name="name" required autofocus placeholder="OpenAI" autocomplete="off" />
+        </div>
+        <div>
+          <label class="block-label" for="provider-endpoint">Endpoint</label>
+          <input id="provider-endpoint" class="field" type="url" name="endpoint" required placeholder="https://api.example.com/v1" autocomplete="off" />
+        </div>
+        <div>
+          <label class="block-label" for="provider-keys">Upstream keys <span class="block-note">one key per line</span></label>
+          <textarea id="provider-keys" class="field" name="keys" rows="4" required placeholder="sk-…&#10;sk-…"></textarea>
+        </div>
+        <div>
+          <label class="block-label" for="provider-section-key">Section key <span class="block-note">optional — auto from name</span></label>
+          <input id="provider-section-key" class="field" type="text" name="key" pattern="[a-zA-Z0-9_-]*" placeholder="auto from name" autocomplete="off" />
+        </div>
+        <div class="dialog-actions">
+          <div class="section-controls">
+            <button class="ghost-btn btn-save" type="submit">Save</button>
+            <button class="ghost-btn ghost-cancel" type="button" data-close-dialog>Cancel</button>
+          </div>
+        </div>
+      </form>
+    </dialog>
+
+    <!-- Add client key -->
+    <dialog id="add-client-dialog" aria-labelledby="add-client-title">
+      <form id="add-client-form" class="dialog-form">
+        <div class="section-heading">
+          <div class="section-kicker">Credentials</div>
+          <h2 id="add-client-title" class="section-title">Add client key</h2>
+          <p>The key is handed to a client to reach the proxy.</p>
+        </div>
+        <div>
+          <label class="block-label" for="client-key">Key <span class="block-note">give this key to the client</span></label>
+          <input id="client-key" class="field" type="text" name="key" required autofocus placeholder="sk-…" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="dialog-actions">
+          <button id="generate-key-btn" class="ghost-btn" type="button">Generate</button>
+          <button id="copy-key-btn" class="ghost-btn" type="button">Copy</button>
+          <div class="section-controls">
+            <button class="ghost-btn btn-save" type="submit">Save</button>
+            <button class="ghost-btn ghost-cancel" type="button" data-close-dialog>Cancel</button>
+          </div>
+        </div>
+      </form>
+    </dialog>
 
     <script src="{{ root_path }}/static/js/dashboard.js"></script>
   </body>
