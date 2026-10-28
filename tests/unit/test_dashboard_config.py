@@ -609,6 +609,129 @@ def test_delete_api_save_failure_restores_section():
 
 
 # --------------------------------------------------------------------------
+# Template provider (example_service) — hidden from GET, protected from DELETE
+# --------------------------------------------------------------------------
+
+
+def _template_entry(**overrides):
+    """The shipped demo section as it appears in the starter config."""
+    entry = {
+        "name": "Example Service",
+        "endpoint": "https://api.example.com/v1",
+        "aliases": ["example"],
+        "headers": {"Authorization": "Bearer ${{keys}}"},
+        "variables": {"keys": ["replace-with-upstream-key"]},
+    }
+    entry.update(overrides)
+    return entry
+
+
+def test_list_apis_hides_template_provider_from_response():
+    config = FakeConfig(
+        {
+            "apis": {
+                "example_service": _template_entry(),
+                "openai": {
+                    "name": "OpenAI",
+                    "endpoint": "https://api.openai.test",
+                    "variables": {"keys": ["k1"]},
+                },
+            }
+        }
+    )
+
+    resp = make_client(config).get("/api/config/apis")
+
+    assert resp.status_code == 200
+    items = resp.json()
+    # Only the non-template provider is listed.
+    assert [item["key"] for item in items] == ["openai"]
+    # Neither the display name nor the section key leaks into the body.
+    assert "Example Service" not in resp.text
+    assert "example_service" not in resp.text
+
+
+def test_list_apis_returns_empty_list_when_only_template_configured():
+    config = FakeConfig({"apis": {"example_service": _template_entry()}})
+
+    resp = make_client(config).get("/api/config/apis")
+
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+def test_list_apis_hides_template_copy_under_different_key():
+    # Same name+endpoint under another section key is still the template.
+    config = FakeConfig(
+        {
+            "apis": {
+                "copy": _template_entry(),
+                "openai": {
+                    "name": "OpenAI",
+                    "endpoint": "https://api.openai.test",
+                },
+            }
+        }
+    )
+
+    resp = make_client(config).get("/api/config/apis")
+
+    assert resp.status_code == 200
+    assert [item["key"] for item in resp.json()] == ["openai"]
+
+
+def test_delete_template_provider_returns_403_without_saving():
+    config = FakeConfig(
+        {
+            "apis": {
+                "example_service": _template_entry(),
+                "openai": {"name": "OpenAI", "endpoint": "https://api.openai.test"},
+            }
+        }
+    )
+
+    resp = make_client(config).delete("/api/config/apis/example_service")
+
+    assert resp.status_code == 403
+    assert "template" in resp.json()["error"]
+    # The section stays intact, no other provider touched, nothing saved.
+    assert config.get("apis.example_service") == _template_entry()
+    assert "openai" in config.get("apis")
+    assert config.save_calls == 0
+
+
+def test_delete_template_copy_under_different_key_returns_403():
+    config = FakeConfig(
+        {
+            "apis": {
+                "copy": _template_entry(),
+                "openai": {"name": "OpenAI", "endpoint": "https://api.openai.test"},
+            }
+        }
+    )
+
+    resp = make_client(config).delete("/api/config/apis/copy")
+
+    assert resp.status_code == 403
+    assert "template" in resp.json()["error"]
+    assert config.get("apis.copy") == _template_entry()
+    assert config.save_calls == 0
+
+
+def test_add_api_with_template_section_key_returns_409():
+    config = FakeConfig({"apis": {"example_service": _template_entry()}})
+
+    resp = make_client(config).post(
+        "/api/config/apis",
+        json=api_payload(key="example_service"),
+    )
+
+    assert resp.status_code == 409
+    assert config.get("apis.example_service") == _template_entry()
+    assert config.save_calls == 0
+
+
+# --------------------------------------------------------------------------
 # POST /api/config/clients
 # --------------------------------------------------------------------------
 

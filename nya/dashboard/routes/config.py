@@ -88,6 +88,28 @@ def _mask_key(key: str) -> str:
     return key[:4] + "..." + key[-4:]
 
 
+_TEMPLATE_PROVIDER_NAME = "Example Service"
+_TEMPLATE_PROVIDER_ENDPOINT = "https://api.example.com/v1"
+
+
+def _is_template_provider(api: Any) -> bool:
+    """True for the shipped demo section from the starter config.
+
+    Identified by display name + endpoint (the project's template
+    placeholder); hidden from the admin API and protected from deletion.
+    """
+    if not isinstance(api, dict):
+        return False
+    name = api.get("name")
+    endpoint = api.get("endpoint")
+    if not isinstance(name, str) or not isinstance(endpoint, str):
+        return False
+    return (
+        name.strip() == _TEMPLATE_PROVIDER_NAME
+        and endpoint.strip() == _TEMPLATE_PROVIDER_ENDPOINT
+    )
+
+
 def _normalize_client_keys(raw: Any) -> List[str]:
     """Coerce ``server.api_key`` (None | str | list) to a list of keys."""
     if raw is None:
@@ -160,6 +182,8 @@ def register_config_routes(app: FastAPI, dashboard: "DashboardAPI") -> None:
             result = []
             for key, api in apis.items():
                 if not isinstance(api, dict):
+                    continue
+                if _is_template_provider(api):
                     continue
                 variables = api.get("variables") or {}
                 keys = (
@@ -316,6 +340,14 @@ def register_config_routes(app: FastAPI, dashboard: "DashboardAPI") -> None:
                 return JSONResponse(
                     status_code=404,
                     content={"error": f"API '{key}' not found"},
+                )
+            if _is_template_provider(apis[key]):
+                return JSONResponse(
+                    status_code=403,
+                    content={
+                        "error": "Example Service is the built-in template "
+                        "provider and cannot be deleted"
+                    },
                 )
             old = apis[key]
             new_apis = {k: v for k, v in apis.items() if k != key}
